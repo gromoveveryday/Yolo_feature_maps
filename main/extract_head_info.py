@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from ultralytics import YOLO
+import matplotlib.pyplot as plt
 import argparse
 from pathlib import Path
 
@@ -91,13 +92,54 @@ def register_head_hooks(detect_module):
             print(f"Зарегистрирован хук на {name} ({module.__class__.__name__})")
     return hooks, outputs
 
-# python main/extract_head_info.py --model models/yolov8n.pt --image images/sample.jpg --save_outputs
+# Сохраняет визуализацию первых max_channels каналов 4D-тензора.
+def _save_tensor_visualization(tensor, base_path, max_channels=16):
+    # tensor: [batch, channels, h, w]
+    if tensor.shape[0] > 1:
+        tensor = tensor[0:1]          # берём первый образец из батча
+    fm = tensor[0]                    # [channels, h, w]
+    num_channels = min(max_channels, fm.shape[0])
+    cols = 4
+    rows = (num_channels + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(cols*3, rows*3))
+    if rows * cols == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+    for i in range(num_channels):
+        channel_img = fm[i, :, :].cpu().numpy()
+        axes[i].imshow(channel_img, cmap='viridis')
+        axes[i].axis('off')
+        axes[i].set_title(f'ch{i}')
+    for j in range(num_channels, rows * cols):
+        axes[j].axis('off')
+    plt.tight_layout()
+    plt.savefig(f"{base_path}.png", dpi=100)
+    plt.close()
+
+# Визуализирует выходы головы (4D тензоры) и сохраняет как PNG. Если выход - список тензоров, визуализирует каждый отдельно.
+def visualize_head_outputs(hook_outputs, save_dir, max_channels=16):
+    vis_dir = Path(save_dir) / 'visualizations'
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    for name, out in hook_outputs.items():
+        # Обрабатываем случай, когда out - список тензоров (например, финальный выход Detect)
+        if isinstance(out, list):
+            for i, o in enumerate(out):
+                if isinstance(o, torch.Tensor) and o.dim() == 4:
+                    _save_tensor_visualization(o, vis_dir / f"{name}_{i}", max_channels)
+        elif isinstance(out, torch.Tensor) and out.dim() == 4:
+            _save_tensor_visualization(out, vis_dir / name, max_channels)
+        else:
+            print(f"Пропускаем визуализацию для {name}: не 4D тензор ({type(out)})")
+
+# python main/extract_head_info.py --model models/yolov8n.pt --image images/sample.jpg --save_outputs --visualize
 def main():
     parser = argparse.ArgumentParser(description="Извлечение информации из детектирующей головы YOLO")
     parser.add_argument('--model', type=str, default='yolov8n.pt', help='Путь к модели YOLO')
     parser.add_argument('--image', type=str, help='Опционально: извлечь выходы головы на этом изображении')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--save_outputs', action='store_true', help='Сохранить выходы головы в .npy')
+    parser.add_argument('--visualize', action='store_true', help='Визуализировать выходы головы и сохранить как PNG')
     args = parser.parse_args()
 
     # Загрузка модели
@@ -159,6 +201,15 @@ def main():
                         if isinstance(o, torch.Tensor):
                             np.save(save_dir / f"{name.replace('.', '_')}_{i}.npy", o.numpy())
             print(f"Выходы сохранены в {save_dir}")
+        
+        else:
+            # Если не сохраняем .npy, но нужна визуализация – создаём папку по умолчанию
+            save_dir = Path("outputs/head_outputs")
+
+        # Визуализация, если указан флаг
+        if args.visualize:
+            visualize_head_outputs(hook_outputs, save_dir, max_channels=16)
+            print(f"Визуализации сохранены в {save_dir / 'visualizations'}")
 
         # Снимаем хуки
         for h in hooks:

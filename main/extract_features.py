@@ -10,9 +10,16 @@ from collections import OrderedDict
 # Скрипт для извлечения всех промежуточных карт признаков (feature maps) из YOLO (ultralytics)
 # Регистрирует хуки на все модули модели, прогоняет одно изображение и сохраняет выходы, также несколько визуализирует
 
+# Возвращает множество полных имён модулей, которые являются Detect или его потомками
+def find_detect_names(model):
+    detect_names = set()
+    for name, module in model.named_modules():
+        if module.__class__.__name__ == 'Detect':
+            detect_names.add(name)
+    return detect_names
+
 # Вспомогательный класс для сбора выходов с помощью хуков
 class FeatureHook:
-    """Регистрирует forward hook на модуле и сохраняет выход."""
     def __init__(self, module, name):
         self.hook = module.register_forward_hook(self.hook_fn)
         self.name = name
@@ -37,11 +44,17 @@ class FeatureHook:
 
 # Рекурсивно обходит все дочерние модули модели и регистрирует хуки. Возвращает список объектов FeatureHook
 def register_all_hooks(model, verbose=True):
+    detect_names = find_detect_names(model)
     hooks = []
     for name, module in model.named_modules():
         # Пропускаем контейнеры, которые просто группируют слои (их выход часто неинформативен)
-        # Регистрируем все модули, у которых есть forward, но не Sequential/ModuleList/ModuleDict
+        # Регистрируем все модули, у которых есть forward, но не Sequential/ModuleList/ModuleDict/Detect
         if isinstance(module, (torch.nn.Sequential, torch.nn.ModuleList, torch.nn.ModuleDict)):
+            continue
+        
+        if any(name.startswith(dn) for dn in detect_names):
+            if verbose:
+                print(f"Пропускаем модуль {name} (принадлежит Detect)")
             continue
         # У некоторых модулей (например, Dropout) выход может быть None или не тензор – пропускаем
         if hasattr(module, 'forward'):
